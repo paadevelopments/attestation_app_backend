@@ -12,6 +12,7 @@ import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -54,6 +55,10 @@ public class AttestationEngine {
                 X509Certificate cert = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(der));
                 cert.checkValidity();
                 certs.add(cert);
+            }
+            if (certs.size() > 1 && certs.get(0).getExtensionValue("1.3.6.1.4.1.11129.2.1.17") == null) {
+                // The chain is likely upside down (Root first). Reverse it to keep PKIX happy.
+                Collections.reverse(certs);
             }
             CertPath certPath = factory.generateCertPath(certs);
             PKIXParameters params = new PKIXParameters(TrustedRootRegistry.getTrustAnchors());
