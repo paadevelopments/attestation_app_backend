@@ -154,16 +154,13 @@ public class AttestationEngine {
         return result;
     }
 
-    public static int computeTrustScore(String verifiedBootState, boolean isBootloaderLocked,
-                                        String keymasterLevel, boolean isRooted, boolean isHookDetected) {
+    public static int computeTrustScore(String verifiedBootState, boolean isBootloaderLocked, String keymasterLevel, boolean isRooted, boolean isHookDetected) {
         int score = 0;
-
-        if ("VERIFIED".equals(verifiedBootState)) score += 40;
-        if (isBootloaderLocked) score += 25;
-        if ("TRUSTED_ENVIRONMENT".equals(keymasterLevel) || "STRONGBOX".equals(keymasterLevel)) score += 20;
-        if (!isRooted) score += 10;
-        if (!isHookDetected) score += 5;
-
+        if ("VERIFIED".equals(verifiedBootState)) score += PolicyConfig.WEIGHT_VERIFIED_BOOT;
+        if (isBootloaderLocked) score += PolicyConfig.WEIGHT_ROOT_OF_TRUST;
+        if ("TRUSTED_ENVIRONMENT".equals(keymasterLevel) || "STRONGBOX".equals(keymasterLevel)) score += PolicyConfig.WEIGHT_KEYMASTER;
+        if (!isRooted) score += PolicyConfig.WEIGHT_ROOT_DETECTED;
+        if (!isHookDetected) score += PolicyConfig.WEIGHT_HOOK_DETECTED;
         return score;
     }
 
