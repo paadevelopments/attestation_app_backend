@@ -1,3 +1,4 @@
+com/paadevelopments/attestation/engine/TrustedRootRegistry.class
 com/paadevelopments/attestation/engine/PolicyConfig.class
 com/paadevelopments/attestation/engine/AttestationEngine$AttestationResult.class
 com/paadevelopments/attestation/servlet/AttestationServlet.class

@@ -14,6 +14,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @WebServlet(urlPatterns = {"/nonce", "/attest"})
@@ -22,13 +24,9 @@ public class AttestationServlet extends HttpServlet {
     private final ObjectMapper mapper = new ObjectMapper();
     private final SecureRandom secureRandom = new SecureRandom();
 
-    // =====================================================
-    // STATIC IMMUTABLE POLICY JSON CACHE
-    // =====================================================
     private static final ObjectNode STATIC_POLICY_JSON;
 
     static {
-        // Build the fixed tree once during compilation class loading
         ObjectMapper initMapper = new ObjectMapper();
         ObjectNode policyJson = initMapper.createObjectNode();
         ObjectNode weightsJson = initMapper.createObjectNode();
@@ -46,7 +44,6 @@ public class AttestationServlet extends HttpServlet {
         policyJson.set("weights", weightsJson);
         policyJson.set("thresholds", thresholdsJson);
 
-        // Make it deeply unmodifiable to guarantee true thread safety across allocations
         STATIC_POLICY_JSON = policyJson.deepCopy();
     }
 
@@ -80,7 +77,7 @@ public class AttestationServlet extends HttpServlet {
         resp.setContentType("application/json");
         ObjectNode responseJson = mapper.createObjectNode();
         responseJson.put("nonce", nonce);
-        responseJson.put("expiresIn", 120000); // 2 minutes
+        responseJson.put("expiresIn", 120000);
         resp.getWriter().print(mapper.writeValueAsString(responseJson));
     }
 
@@ -91,7 +88,6 @@ public class AttestationServlet extends HttpServlet {
             JsonNode rootNode = mapper.readTree(req.getReader());
             String nonce = rootNode.has("nonce") ? rootNode.get("nonce").asText() : "";
 
-            // 1. Run Nonce / Replay Verification Check
             String nonceCheck = AttestationEngine.verifyNonce(nonce);
             if (!"VALID".equals(nonceCheck)) {
                 resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
@@ -99,7 +95,6 @@ public class AttestationServlet extends HttpServlet {
                 return;
             }
 
-            // 2. Format and Verify Certificate Payload Arrays
             JsonNode chainNode = rootNode.get("certificateChain");
             if (chainNode == null || !chainNode.isArray() || chainNode.isEmpty()) {
                 resp.setStatus(HttpServletResponse.SC_BAD_REQUEST);
@@ -107,11 +102,22 @@ public class AttestationServlet extends HttpServlet {
                 return;
             }
 
+            List<String> certificateChain = new ArrayList<>();
+            for (JsonNode node : chainNode) {
+                certificateChain.add(node.asText());
+            }
+
+            // Enforce Registry-driven Trust Matrix Validation
+            if (!AttestationEngine.verifyCertificateChain(certificateChain)) {
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                out.print("{\"success\":false,\"reason\":\"CERTIFICATE_CHAIN_UNTRUSTED\"}");
+                return;
+            }
+
             boolean isRooted = rootNode.has("isRooted") && rootNode.get("isRooted").asBoolean();
             boolean isHookDetected = rootNode.has("isHookDetected") && rootNode.get("isHookDetected").asBoolean();
-            String base64LeafCert = chainNode.get(0).asText();
+            String base64LeafCert = certificateChain.get(0);
 
-            // 3. Cryptographic Hardware State Interception
             AttestationResult parsedAttestation = AttestationEngine.parseAndroidAttestation(base64LeafCert);
             System.out.println("Parsed Hardware Attestation Output: " + mapper.writeValueAsString(parsedAttestation));
 
@@ -121,7 +127,6 @@ public class AttestationServlet extends HttpServlet {
                 return;
             }
 
-            // 4. Policy Execution Matrix Calculation
             int score = AttestationEngine.computeTrustScore(
                     parsedAttestation.verifiedBootState,
                     parsedAttestation.isBootloaderLocked,
@@ -146,14 +151,11 @@ public class AttestationServlet extends HttpServlet {
                 AttestationEngine.sessionStore.put(sessionId, score);
             }
 
-            // 5. Build Response Payload using Cached Tree Reference
             ObjectNode responseJson = mapper.createObjectNode();
             responseJson.put("success", success);
             responseJson.put("decision", decision);
             responseJson.put("trustScore", score);
             responseJson.put("sessionId", sessionId);
-
-            // Re-use the exact memory block layout via shared read-only assignment reference
             responseJson.set("policy", STATIC_POLICY_JSON);
 
             out.print(mapper.writeValueAsString(responseJson));
