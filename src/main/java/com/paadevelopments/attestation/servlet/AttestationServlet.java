@@ -22,6 +22,34 @@ public class AttestationServlet extends HttpServlet {
     private final ObjectMapper mapper = new ObjectMapper();
     private final SecureRandom secureRandom = new SecureRandom();
 
+    // =====================================================
+    // STATIC IMMUTABLE POLICY JSON CACHE
+    // =====================================================
+    private static final ObjectNode STATIC_POLICY_JSON;
+
+    static {
+        // Build the fixed tree once during compilation class loading
+        ObjectMapper initMapper = new ObjectMapper();
+        ObjectNode policyJson = initMapper.createObjectNode();
+        ObjectNode weightsJson = initMapper.createObjectNode();
+        ObjectNode thresholdsJson = initMapper.createObjectNode();
+
+        weightsJson.put("verifiedBoot", PolicyConfig.WEIGHT_VERIFIED_BOOT);
+        weightsJson.put("rootOfTrust", PolicyConfig.WEIGHT_ROOT_OF_TRUST);
+        weightsJson.put("keymaster", PolicyConfig.WEIGHT_KEYMASTER);
+        weightsJson.put("rootDetected", PolicyConfig.WEIGHT_ROOT_DETECTED);
+        weightsJson.put("hookDetected", PolicyConfig.WEIGHT_HOOK_DETECTED);
+
+        thresholdsJson.put("approve", PolicyConfig.THRESHOLD_APPROVE);
+        thresholdsJson.put("reject", PolicyConfig.THRESHOLD_REJECT);
+
+        policyJson.set("weights", weightsJson);
+        policyJson.set("thresholds", thresholdsJson);
+
+        // Make it deeply unmodifiable to guarantee true thread safety across allocations
+        STATIC_POLICY_JSON = policyJson.deepCopy();
+    }
+
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
         if ("/nonce".equals(req.getServletPath())) {
@@ -93,7 +121,7 @@ public class AttestationServlet extends HttpServlet {
                 return;
             }
 
-            // 4. Policy Execution Matrix Calculation via Dynamic Weighting Configs
+            // 4. Policy Execution Matrix Calculation
             int score = AttestationEngine.computeTrustScore(
                     parsedAttestation.verifiedBootState,
                     parsedAttestation.isBootloaderLocked,
@@ -118,28 +146,15 @@ public class AttestationServlet extends HttpServlet {
                 AttestationEngine.sessionStore.put(sessionId, score);
             }
 
-            // 5. Build Comprehensive Output Object payload reflecting constants
+            // 5. Build Response Payload using Cached Tree Reference
             ObjectNode responseJson = mapper.createObjectNode();
             responseJson.put("success", success);
             responseJson.put("decision", decision);
             responseJson.put("trustScore", score);
             responseJson.put("sessionId", sessionId);
 
-            ObjectNode policyJson = mapper.createObjectNode();
-            ObjectNode weightsJson = mapper.createObjectNode();
-            weightsJson.put("verifiedBoot", PolicyConfig.WEIGHT_VERIFIED_BOOT);
-            weightsJson.put("rootOfTrust", PolicyConfig.WEIGHT_ROOT_OF_TRUST);
-            weightsJson.put("keymaster", PolicyConfig.WEIGHT_KEYMASTER);
-            weightsJson.put("rootDetected", PolicyConfig.WEIGHT_ROOT_DETECTED);
-            weightsJson.put("hookDetected", PolicyConfig.WEIGHT_HOOK_DETECTED);
-
-            ObjectNode thresholdsJson = mapper.createObjectNode();
-            thresholdsJson.put("approve", PolicyConfig.THRESHOLD_APPROVE);
-            thresholdsJson.put("reject", PolicyConfig.THRESHOLD_REJECT);
-
-            policyJson.set("weights", weightsJson);
-            policyJson.set("thresholds", thresholdsJson);
-            responseJson.set("policy", policyJson);
+            // Re-use the exact memory block layout via shared read-only assignment reference
+            responseJson.set("policy", STATIC_POLICY_JSON);
 
             out.print(mapper.writeValueAsString(responseJson));
 
