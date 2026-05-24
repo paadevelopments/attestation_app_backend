@@ -24,7 +24,7 @@ public class AttestationServlet extends HttpServlet {
 
     private static volatile boolean identityLoaded = false;
     private static final Object identityLock = new Object();
-    private static final Map<String, String> APP_IDENTITY_MAP = new HashMap<>();
+    Map<String, Set<String>> APP_IDENTITY_MAP = new HashMap<>();
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
@@ -57,8 +57,14 @@ public class AttestationServlet extends HttpServlet {
                 if (apps != null && apps.isArray()) {
                     for (JsonNode app : apps) {
                         String pkg = app.get("packageName").asText().trim();
-                        String cert = app.get("certFingerprintSha256").asText().trim();
-                        APP_IDENTITY_MAP.put(pkg, cert);
+                        Set<String> fingerprints = new HashSet<>();
+                        JsonNode certs = app.get("certFingerprintSha256");
+                        if (certs != null && certs.isArray()) {
+                            for (JsonNode c : certs) {
+                                fingerprints.add(c.asText().trim());
+                            }
+                        }
+                        APP_IDENTITY_MAP.put(pkg, fingerprints);
                     }
                 }
                 identityLoaded = true;
@@ -95,11 +101,11 @@ public class AttestationServlet extends HttpServlet {
         if (packageName.isEmpty() || clientSignature.isEmpty()) {
             return false;
         }
-        if (!APP_IDENTITY_MAP.containsKey(packageName)) {
+        Set<String> allowedFingerprints = APP_IDENTITY_MAP.get(packageName);
+        if (allowedFingerprints == null || allowedFingerprints.isEmpty()) {
             return false;
         }
-        String expectedFingerprint = APP_IDENTITY_MAP.get(packageName);
-        return expectedFingerprint.equalsIgnoreCase(clientSignature);
+        return allowedFingerprints.contains(clientSignature);
     }
 
     private void handleAttestationSubmission(HttpServletRequest req, HttpServletResponse resp) throws IOException {

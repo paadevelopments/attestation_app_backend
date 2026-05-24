@@ -2,7 +2,9 @@
   "apps": [
     {
       "packageName": "com.paadevelopments.attestation_app",
-      "certFingerprintSha256": "03E774C642FE5577694B052F586056DB5F50CA369A7F6FC9078B5CC5CFB4C595"
+      "certFingerprintSha256": [
+        "03E774C642FE5577694B052F586056DB5F50CA369A7F6FC9078B5CC5CFB4C595"
+      ]
     }
   ]
 }
