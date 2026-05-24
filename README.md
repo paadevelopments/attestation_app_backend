@@ -54,3 +54,7 @@ The project is configured with the `jetty-maven-plugin`, allowing you to run the
 - `src/main/java`: Contains the core logic for the Attestation Engine and Servlets.
 - `src/main/resources`: Contains configuration files and trusted root certificates.
 - `pom.xml`: Maven configuration file defining dependencies and build plugins.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
