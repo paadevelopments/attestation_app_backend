@@ -10,14 +10,10 @@ import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
 import java.util.*;
 
 @WebServlet(urlPatterns = {"/nonce", "/attest"})
@@ -89,26 +85,21 @@ public class AttestationServlet extends HttpServlet {
         resp.getWriter().print(mapper.writeValueAsString(responseJson));
     }
 
-    private boolean verifyAppIdentity(JsonNode rootNode, X509Certificate leafCert) throws Exception {
+    private boolean verifyAppIdentity(JsonNode rootNode) {
         String packageName = rootNode.has("packageName")
                 ? rootNode.get("packageName").asText().trim()
                 : "";
+        String clientSignature = rootNode.has("signature")
+                ? rootNode.get("signature").asText().trim()
+                : "";
+        if (packageName.isEmpty() || clientSignature.isEmpty()) {
+            return false;
+        }
         if (!APP_IDENTITY_MAP.containsKey(packageName)) {
             return false;
         }
         String expectedFingerprint = APP_IDENTITY_MAP.get(packageName);
-        String actualFingerprint = getCertFingerprint(leafCert);
-        return expectedFingerprint.equals(actualFingerprint);
-    }
-
-    private String getCertFingerprint(X509Certificate cert) throws Exception {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        byte[] digest = md.digest(cert.getEncoded());
-        StringBuilder sb = new StringBuilder();
-        for (byte b : digest) {
-            sb.append(String.format("%02X", b));
-        }
-        return sb.toString();
+        return expectedFingerprint.equalsIgnoreCase(clientSignature);
     }
 
     private void handleAttestationSubmission(HttpServletRequest req, HttpServletResponse resp) throws IOException {
@@ -148,14 +139,7 @@ public class AttestationServlet extends HttpServlet {
                 out.print("{\"success\":false,\"decision\":\"DENY\",\"reason\":\"CRYPTO_PARSING_FAILED\"}");
                 return;
             }
-            CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            X509Certificate leafCert = (X509Certificate)
-                    cf.generateCertificate(new java.io.ByteArrayInputStream(
-                            Base64.getDecoder().decode(base64LeafCert
-                                    .replace("-----BEGIN CERTIFICATE-----", "")
-                                    .replace("-----END CERTIFICATE-----", "")
-                                    .replaceAll("\\s+", ""))));
-            boolean appIdentityValid = verifyAppIdentity(rootNode, leafCert);
+            boolean appIdentityValid = verifyAppIdentity(rootNode);
             boolean policyAllow = parsedAttestation.isHardwareBacked &&
                             "VERIFIED".equals(parsedAttestation.verifiedBootState) &&
                             parsedAttestation.isBootloaderLocked &&
