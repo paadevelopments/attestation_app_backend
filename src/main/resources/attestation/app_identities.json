@@ -1,0 +1,8 @@
+{
+  "apps": [
+    {
+      "packageName": "com.paadevelopments.attestation_app",
+      "certFingerprintSha256": "ABCDEF123..."
+    }
+  ]
+}

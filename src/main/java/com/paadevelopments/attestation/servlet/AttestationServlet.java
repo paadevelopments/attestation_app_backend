@@ -12,16 +12,23 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.util.ArrayList;
-import java.util.List;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.util.*;
 
 @WebServlet(urlPatterns = {"/nonce", "/attest"})
 public class AttestationServlet extends HttpServlet {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final SecureRandom secureRandom = new SecureRandom();
+
+    private static volatile boolean identityLoaded = false;
+    private static final Object identityLock = new Object();
+    private static final Map<String, String> APP_IDENTITY_MAP = new HashMap<>();
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
@@ -41,6 +48,31 @@ public class AttestationServlet extends HttpServlet {
         }
     }
 
+    private void ensureIdentityRegistryLoaded() {
+        if (identityLoaded) return;
+        synchronized (identityLock) {
+            if (identityLoaded) return;
+            try (InputStream is = getClass().getClassLoader().getResourceAsStream("attestation/app_identities.json")) {
+                if (is == null) {
+                    throw new RuntimeException("Missing attestation/app_identities.json");
+                }
+                JsonNode root = mapper.readTree(is);
+                JsonNode apps = root.get("apps");
+                if (apps != null && apps.isArray()) {
+                    for (JsonNode app : apps) {
+                        String pkg = app.get("packageName").asText().trim();
+                        String cert = app.get("certFingerprintSha256").asText().trim();
+                        APP_IDENTITY_MAP.put(pkg, cert);
+                    }
+                }
+                identityLoaded = true;
+                System.out.println("Loaded app identity entries: " + APP_IDENTITY_MAP.size());
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to load app identity registry", e);
+            }
+        }
+    }
+
     private void handleNonceGeneration(HttpServletResponse resp) throws IOException {
         byte[] nonceBytes = new byte[32];
         secureRandom.nextBytes(nonceBytes);
@@ -57,11 +89,34 @@ public class AttestationServlet extends HttpServlet {
         resp.getWriter().print(mapper.writeValueAsString(responseJson));
     }
 
+    private boolean verifyAppIdentity(JsonNode rootNode, X509Certificate leafCert) throws Exception {
+        String packageName = rootNode.has("packageName")
+                ? rootNode.get("packageName").asText().trim()
+                : "";
+        if (!APP_IDENTITY_MAP.containsKey(packageName)) {
+            return false;
+        }
+        String expectedFingerprint = APP_IDENTITY_MAP.get(packageName);
+        String actualFingerprint = getCertFingerprint(leafCert);
+        return expectedFingerprint.equals(actualFingerprint);
+    }
+
+    private String getCertFingerprint(X509Certificate cert) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        byte[] digest = md.digest(cert.getEncoded());
+        StringBuilder sb = new StringBuilder();
+        for (byte b : digest) {
+            sb.append(String.format("%02X", b));
+        }
+        return sb.toString();
+    }
+
     private void handleAttestationSubmission(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         resp.setContentType("application/json");
         PrintWriter out = resp.getWriter();
         try {
             JsonNode rootNode = mapper.readTree(req.getReader());
+            ensureIdentityRegistryLoaded();
             String nonce = rootNode.has("nonce") ? rootNode.get("nonce").asText() : "";
             String nonceCheck = AttestationEngine.verifyNonce(nonce);
             if (!"VALID".equals(nonceCheck)) {
@@ -93,11 +148,20 @@ public class AttestationServlet extends HttpServlet {
                 out.print("{\"success\":false,\"decision\":\"DENY\",\"reason\":\"CRYPTO_PARSING_FAILED\"}");
                 return;
             }
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            X509Certificate leafCert = (X509Certificate)
+                    cf.generateCertificate(new java.io.ByteArrayInputStream(
+                            Base64.getDecoder().decode(base64LeafCert
+                                    .replace("-----BEGIN CERTIFICATE-----", "")
+                                    .replace("-----END CERTIFICATE-----", "")
+                                    .replaceAll("\\s+", ""))));
+            boolean appIdentityValid = verifyAppIdentity(rootNode, leafCert);
             boolean policyAllow = parsedAttestation.isHardwareBacked &&
                             "VERIFIED".equals(parsedAttestation.verifiedBootState) &&
                             parsedAttestation.isBootloaderLocked &&
                             !isRooted &&
-                            !isHookDetected;
+                            !isHookDetected &&
+                            appIdentityValid;
             if (!policyAllow) {
                 resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
                 out.print("{\"success\":false,\"decision\":\"DENY\",\"reason\":\"POLICY_REJECTED\"}");
