@@ -1,7 +1,15 @@
 package com.paadevelopments.attestation.engine;
 
+import org.bouncycastle.asn1.ASN1Boolean;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1Enumerated;
 import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.ASN1TaggedObject;
+
 import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.cert.CertPath;
 import java.security.cert.CertPathValidator;
 import java.security.cert.CertPathValidatorException;
@@ -21,7 +29,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AttestationEngine {
 
     private static final String ATTESTATION_OID = "1.3.6.1.4.1.11129.2.1.17";
-    private static final long MAX_NONCE_AGE_MS = 2 * 60 * 1000; // 2 minutes
+    private static final long MAX_NONCE_AGE_MS = 2 * 60 * 1000;
+
     public static final Map<String, Long> nonceStore = new ConcurrentHashMap<>();
     public static final Set<String> usedNonceStore = ConcurrentHashMap.newKeySet();
     public static final Map<String, Integer> sessionStore = new ConcurrentHashMap<>();
@@ -34,10 +43,6 @@ public class AttestationEngine {
         public String verifiedBootState = "UNKNOWN";
     }
 
-    /**
-     * REFACTORED MULTI-ROOT TRUST VALIDATION ENGINE
-     * Loops through registered trusted roots to cross-verify alternate OEM architectures.
-     */
     public static boolean verifyCertificateChain(List<String> base64Chain) {
         try {
             if (base64Chain == null || base64Chain.isEmpty()) {
@@ -56,8 +61,7 @@ public class AttestationEngine {
                 cert.checkValidity();
                 certs.add(cert);
             }
-            if (certs.size() > 1 && certs.get(0).getExtensionValue("1.3.6.1.4.1.11129.2.1.17") == null) {
-                // The chain is likely upside down (Root first). Reverse it to keep PKIX happy.
+            if (certs.size() > 1 && certs.get(0).getExtensionValue(ATTESTATION_OID) == null) {
                 Collections.reverse(certs);
             }
             CertPath certPath = factory.generateCertPath(certs);
@@ -69,167 +73,340 @@ public class AttestationEngine {
             X509Certificate trustedRoot = anchor.getTrustedCert();
             System.out.println("SUCCESS: Chain validated against Google root: " + trustedRoot.getSubjectX500Principal());
             X509Certificate leaf = certs.get(0);
-            // Attestation certs must contain extension
-            byte[] attestationExtension = leaf.getExtensionValue("1.3.6.1.4.1.11129.2.1.17");
+            byte[] attestationExtension =
+                    leaf.getExtensionValue(ATTESTATION_OID);
+
             if (attestationExtension == null) {
-                System.err.println("REJECTED: Missing Android attestation extension.");
+                System.err.println(
+                        "REJECTED: Missing Android attestation extension.");
                 return false;
             }
-            // Strong signal this is hardware-backed
+
             if (leaf.getPublicKey() == null) {
-                System.err.println("REJECTED: Invalid leaf public key.");
+                System.err.println(
+                        "REJECTED: Invalid leaf public key.");
                 return false;
             }
-            System.out.println("SUCCESS: Android attestation extension verified.");
+
+            System.out.println(
+                    "SUCCESS: Android attestation extension verified.");
+
             return true;
+
         } catch (CertPathValidatorException e) {
+
             System.err.println(
                     "REJECTED: PKIX validation failed at index "
                             + e.getIndex()
                             + " reason="
                             + e.getReason());
+
             return false;
+
         } catch (Exception e) {
+
             System.err.println(
                     "CRITICAL: Attestation verification failure: "
                             + e.getMessage());
+
             e.printStackTrace();
+
             return false;
         }
     }
 
-    /**
-     * PARSING LOGIC MATRIX
-     */
-    public static AttestationResult parseAndroidAttestation(String base64Cert) {
+    public static AttestationResult parseAndroidAttestation(
+            String base64Cert,
+            String expectedNonce) {
+
         AttestationResult result = new AttestationResult();
+
         try {
-            String cleanCert = base64Cert.trim().replaceAll("\\s", "");
-            byte[] certBuffer = Base64.getDecoder().decode(cleanCert);
 
-            CertificateFactory factory = CertificateFactory.getInstance("X.509");
-            X509Certificate x509 = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(certBuffer));
+            String cleanCert =
+                    base64Cert
+                            .replace("-----BEGIN CERTIFICATE-----", "")
+                            .replace("-----END CERTIFICATE-----", "")
+                            .replaceAll("\\s+", "");
 
-            byte[] extValue = x509.getExtensionValue(ATTESTATION_OID);
+            byte[] certBuffer =
+                    Base64.getDecoder().decode(cleanCert);
+
+            CertificateFactory factory =
+                    CertificateFactory.getInstance("X.509");
+
+            X509Certificate x509 =
+                    (X509Certificate)
+                            factory.generateCertificate(
+                                    new ByteArrayInputStream(certBuffer));
+
+            byte[] extValue =
+                    x509.getExtensionValue(ATTESTATION_OID);
+
             if (extValue == null) {
-                System.out.println("Attestation extension OID missing inside hardware layer.");
+                System.err.println(
+                        "Attestation extension OID missing.");
                 return null;
             }
 
-            ASN1OctetString octetString = ASN1OctetString.getInstance(extValue);
-            byte[] extValueBytes = octetString.getOctets();
+            ASN1OctetString octetString =
+                    ASN1OctetString.getInstance(extValue);
+
+            ASN1Primitive primitive =
+                    ASN1Primitive.fromByteArray(
+                            octetString.getOctets());
+
+            ASN1Sequence keyDescription =
+                    ASN1Sequence.getInstance(primitive);
+
+            ASN1OctetString challenge =
+                    ASN1OctetString.getInstance(
+                            keyDescription.getObjectAt(4));
+
+            String challengeString =
+                    new String(
+                            challenge.getOctets(),
+                            StandardCharsets.UTF_8);
+
+            if (!expectedNonce.equals(challengeString)) {
+                System.err.println(
+                        "REJECTED: Attestation nonce mismatch.");
+                return null;
+            }
+
+            System.out.println(
+                    "SUCCESS: Attestation challenge verified.");
 
             result.isValidChainElement = true;
 
-            if (extValueBytes != null && extValueBytes.length > 4) {
-                int cursor = 0;
-                if ((extValueBytes[cursor] & 0xFF) == 0x30) {
-                    cursor++;
-                    if ((extValueBytes[cursor] & 0x80) != 0) {
-                        cursor += 1 + (extValueBytes[cursor] & 0x7F);
-                    } else {
-                        cursor++;
-                    }
-                }
+            ASN1Enumerated attestationSecurityLevel =
+                    ASN1Enumerated.getInstance(
+                            keyDescription.getObjectAt(1));
 
-                if ((extValueBytes[cursor] & 0xFF) == 0x02) {
-                    cursor += 2 + extValueBytes[cursor + 1];
-                }
-                if ((extValueBytes[cursor] & 0xFF) == 0x0A || (extValueBytes[cursor] & 0xFF) == 0x02) {
-                    int val = extValueBytes[cursor + 2];
-                    result.attestationSecurityLevel = (val == 1) ? "TRUSTED_ENVIRONMENT" : (val == 2) ? "STRONGBOX" : "SOFTWARE";
-                    cursor += 2 + extValueBytes[cursor + 1];
-                }
-                if ((extValueBytes[cursor] & 0xFF) == 0x02) {
-                    cursor += 2 + extValueBytes[cursor + 1];
-                }
-                if ((extValueBytes[cursor] & 0xFF) == 0x0A || (extValueBytes[cursor] & 0xFF) == 0x02) {
-                    int val = extValueBytes[cursor + 2];
-                    result.keymasterSecurityLevel = (val == 1) ? "TRUSTED_ENVIRONMENT" : (val == 2) ? "STRONGBOX" : "SOFTWARE";
-                }
+            result.attestationSecurityLevel =
+                    securityLevelToString(
+                            attestationSecurityLevel
+                                    .getValue()
+                                    .intValue());
 
-                int rotCursor = -1;
-                int rotLen = 0;
+            ASN1Enumerated keymasterSecurityLevel =
+                    ASN1Enumerated.getInstance(
+                            keyDescription.getObjectAt(3));
 
-                for (int i = 0; i < extValueBytes.length - 4; i++) {
-                    if ((extValueBytes[i] & 0xFF) == 0xBF && (extValueBytes[i+1] & 0xFF) == 0x85 && (extValueBytes[i+2] & 0xFF) == 0x40) {
-                        int lenByte = extValueBytes[i + 3] & 0xFF;
-                        int headerOffset = 4;
-                        if ((lenByte & 0x80) != 0) {
-                            headerOffset += (lenByte & 0x7F);
-                        }
-                        if ((extValueBytes[i + headerOffset] & 0xFF) == 0x30) {
-                            rotCursor = i + headerOffset;
-                            rotLen = extValueBytes[rotCursor + 1] & 0xFF;
-                            break;
-                        }
-                    }
-                    if ((extValueBytes[i] & 0xFF) == 0xA4 && (extValueBytes[i + 2] & 0xFF) == 0x30) {
-                        rotCursor = i + 2;
-                        rotLen = extValueBytes[rotCursor + 1] & 0xFF;
-                        break;
-                    }
-                }
+            result.keymasterSecurityLevel =
+                    securityLevelToString(
+                            keymasterSecurityLevel
+                                    .getValue()
+                                    .intValue());
 
-                if (rotCursor != -1) {
-                    if ((rotLen & 0x80) != 0) {
-                        int lengthBytesCount = rotLen & 0x7F;
-                        rotCursor += 2 + lengthBytesCount;
-                    } else {
-                        rotCursor += 2;
+            ASN1Sequence rootOfTrust =
+                    extractRootOfTrust(keyDescription);
+
+            if (rootOfTrust != null) {
+
+                for (int i = 0; i < rootOfTrust.size(); i++) {
+
+                    ASN1Encodable enc =
+                            rootOfTrust.getObjectAt(i);
+
+                    if (enc instanceof ASN1Boolean) {
+                        result.isBootloaderLocked =
+                                ((ASN1Boolean) enc).isTrue();
                     }
 
-                    int scanLimit = rotCursor + ((rotLen & 0x80) != 0 ? 128 : rotLen);
-                    if (scanLimit > extValueBytes.length) scanLimit = extValueBytes.length;
+                    if (enc instanceof ASN1Enumerated) {
 
-                    while (rotCursor < scanLimit) {
-                        int tag = extValueBytes[rotCursor] & 0xFF;
-                        int len = extValueBytes[rotCursor + 1] & 0xFF;
+                        int state =
+                                ((ASN1Enumerated) enc)
+                                        .getValue()
+                                        .intValue();
 
-                        if (rotCursor + 2 + len > extValueBytes.length) break;
+                        switch (state) {
+                            case 0:
+                                result.verifiedBootState =
+                                        "VERIFIED";
+                                break;
 
-                        if (tag == 0x01) {
-                            result.isBootloaderLocked = extValueBytes[rotCursor + 2] != 0x00;
+                            case 1:
+                                result.verifiedBootState =
+                                        "SELF_SIGNED";
+                                break;
+
+                            case 2:
+                                result.verifiedBootState =
+                                        "UNVERIFIED";
+                                break;
+
+                            case 3:
+                                result.verifiedBootState =
+                                        "FAILED";
+                                break;
+
+                            default:
+                                result.verifiedBootState =
+                                        "UNKNOWN";
                         }
-
-                        if (tag == 0x0A) {
-                            int bootStateVal = extValueBytes[rotCursor + 2];
-                            String[] states = {"VERIFIED", "SELF_SIGNED", "UNVERIFIED", "FAILED"};
-                            if (bootStateVal >= 0 && bootStateVal < states.length) {
-                                result.verifiedBootState = states[bootStateVal];
-                            } else {
-                                result.verifiedBootState = "UNKNOWN";
-                            }
-                        }
-
-                        rotCursor += 2 + len;
-                        if (tag == 0x00) break;
                     }
                 }
             }
+
+            return result;
+
         } catch (Exception e) {
-            System.err.println("Cryptographic hardware block verification failure: " + e.getMessage());
+
+            System.err.println(
+                    "Cryptographic hardware block verification failure: "
+                            + e.getMessage());
+
+            e.printStackTrace();
+
             return null;
         }
-        return result;
     }
 
-    public static int computeTrustScore(String verifiedBootState, boolean isBootloaderLocked,
-                                        String keymasterLevel, boolean isRooted, boolean isHookDetected) {
+    private static ASN1Sequence extractRootOfTrust(
+            ASN1Sequence keyDescription) {
+
+        try {
+
+            ASN1Encodable teeObj =
+                    keyDescription.getObjectAt(7);
+
+            ASN1Sequence teeEnforced;
+
+            if (teeObj instanceof ASN1Sequence) {
+
+                teeEnforced = (ASN1Sequence) teeObj;
+
+            } else if (teeObj instanceof ASN1OctetString) {
+
+                ASN1OctetString oct =
+                        (ASN1OctetString) teeObj;
+
+                ASN1Primitive primitive =
+                        ASN1Primitive.fromByteArray(
+                                oct.getOctets());
+
+                teeEnforced =
+                        ASN1Sequence.getInstance(primitive);
+
+            } else {
+
+                return null;
+            }
+
+            for (ASN1Encodable enc : teeEnforced) {
+
+                ASN1TaggedObject tagged =
+                        ASN1TaggedObject.getInstance(enc);
+
+                if (tagged.getTagNo() == 704) {
+
+                    ASN1Encodable obj =
+                            tagged.getBaseObject();
+
+                    if (obj instanceof ASN1Sequence) {
+                        return (ASN1Sequence) obj;
+                    }
+
+                    if (obj instanceof ASN1OctetString) {
+
+                        ASN1OctetString oct =
+                                (ASN1OctetString) obj;
+
+                        ASN1Primitive primitive =
+                                ASN1Primitive.fromByteArray(
+                                        oct.getOctets());
+
+                        return ASN1Sequence.getInstance(
+                                primitive);
+                    }
+
+                    ASN1Primitive primitive =
+                            obj.toASN1Primitive();
+
+                    if (primitive instanceof ASN1Sequence) {
+                        return (ASN1Sequence) primitive;
+                    }
+
+                    if (primitive instanceof ASN1OctetString) {
+
+                        ASN1OctetString oct =
+                                (ASN1OctetString) primitive;
+
+                        return ASN1Sequence.getInstance(
+                                ASN1Primitive.fromByteArray(
+                                        oct.getOctets()));
+                    }
+                }
+            }
+
+        } catch (Exception e) {
+
+            System.err.println(
+                    "RootOfTrust extraction failed: "
+                            + e.getMessage());
+        }
+
+        return null;
+    }
+
+    private static String securityLevelToString(int level) {
+        switch (level) {
+            case 0:
+                return "SOFTWARE";
+            case 1:
+                return "TRUSTED_ENVIRONMENT";
+            case 2:
+                return "STRONGBOX";
+            default:
+                return "UNKNOWN";
+        }
+    }
+
+    public static int computeTrustScore(
+            String verifiedBootState,
+            boolean isBootloaderLocked,
+            String keymasterLevel,
+            boolean isRooted,
+            boolean isHookDetected) {
+
         int score = 0;
 
-        if ("VERIFIED".equals(verifiedBootState)) score += PolicyConfig.WEIGHT_VERIFIED_BOOT;
-        if (isBootloaderLocked) score += PolicyConfig.WEIGHT_ROOT_OF_TRUST;
-        if ("TRUSTED_ENVIRONMENT".equals(keymasterLevel) || "STRONGBOX".equals(keymasterLevel)) score += PolicyConfig.WEIGHT_KEYMASTER;
-        if (!isRooted) score += PolicyConfig.WEIGHT_ROOT_DETECTED;
-        if (!isHookDetected) score += PolicyConfig.WEIGHT_HOOK_DETECTED;
+        if ("VERIFIED".equals(verifiedBootState)) {
+            score += PolicyConfig.WEIGHT_VERIFIED_BOOT;
+        }
+
+        if (isBootloaderLocked) {
+            score += PolicyConfig.WEIGHT_ROOT_OF_TRUST;
+        }
+
+        if ("TRUSTED_ENVIRONMENT".equals(keymasterLevel)
+                || "STRONGBOX".equals(keymasterLevel)) {
+
+            score += PolicyConfig.WEIGHT_KEYMASTER;
+        }
+
+        if (!isRooted) {
+            score += PolicyConfig.WEIGHT_ROOT_DETECTED;
+        }
+
+        if (!isHookDetected) {
+            score += PolicyConfig.WEIGHT_HOOK_DETECTED;
+        }
 
         return score;
     }
 
     public static String verifyNonce(String nonce) {
-        if (!nonceStore.containsKey(nonce)) return "UNKNOWN_NONCE";
-        if (usedNonceStore.contains(nonce)) return "REPLAY_DETECTED";
+
+        if (!nonceStore.containsKey(nonce)) {
+            return "UNKNOWN_NONCE";
+        }
+
+        if (usedNonceStore.contains(nonce)) {
+            return "REPLAY_DETECTED";
+        }
 
         long createdAt = nonceStore.get(nonce);
         long now = System.currentTimeMillis();
@@ -240,6 +417,7 @@ public class AttestationEngine {
 
         usedNonceStore.add(nonce);
         nonceStore.remove(nonce);
+
         return "VALID";
     }
 }
