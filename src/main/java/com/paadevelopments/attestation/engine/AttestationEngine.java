@@ -41,6 +41,7 @@ public class AttestationEngine {
         public String keymasterSecurityLevel = "UNKNOWN";
         public boolean isBootloaderLocked = false;
         public String verifiedBootState = "UNKNOWN";
+        public boolean isHardwareBacked = false;
     }
 
     public static boolean verifyCertificateChain(List<String> base64Chain) {
@@ -49,30 +50,54 @@ public class AttestationEngine {
                 System.err.println("REJECTED: Empty certificate chain.");
                 return false;
             }
+
             CertificateFactory factory = CertificateFactory.getInstance("X.509");
             List<X509Certificate> certs = new ArrayList<>();
+
             for (String base64 : base64Chain) {
                 String clean = base64
                         .replace("-----BEGIN CERTIFICATE-----", "")
                         .replace("-----END CERTIFICATE-----", "")
                         .replaceAll("\\s+", "");
+
                 byte[] der = Base64.getDecoder().decode(clean);
-                X509Certificate cert = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(der));
+
+                X509Certificate cert =
+                        (X509Certificate) factory.generateCertificate(
+                                new ByteArrayInputStream(der));
+
                 cert.checkValidity();
                 certs.add(cert);
             }
-            if (certs.size() > 1 && certs.get(0).getExtensionValue(ATTESTATION_OID) == null) {
+
+            if (certs.size() > 1 &&
+                    certs.get(0).getExtensionValue(ATTESTATION_OID) == null) {
                 Collections.reverse(certs);
             }
+
             CertPath certPath = factory.generateCertPath(certs);
-            PKIXParameters params = new PKIXParameters(TrustedRootRegistry.getTrustAnchors());
+
+            PKIXParameters params =
+                    new PKIXParameters(TrustedRootRegistry.getTrustAnchors());
+
             params.setRevocationEnabled(false);
-            CertPathValidator validator = CertPathValidator.getInstance("PKIX");
-            PKIXCertPathValidatorResult result = (PKIXCertPathValidatorResult) validator.validate(certPath, params);
+
+            CertPathValidator validator =
+                    CertPathValidator.getInstance("PKIX");
+
+            PKIXCertPathValidatorResult result =
+                    (PKIXCertPathValidatorResult)
+                            validator.validate(certPath, params);
+
             TrustAnchor anchor = result.getTrustAnchor();
             X509Certificate trustedRoot = anchor.getTrustedCert();
-            System.out.println("SUCCESS: Chain validated against Google root: " + trustedRoot.getSubjectX500Principal());
+
+            System.out.println(
+                    "SUCCESS: Chain validated against Google root: "
+                            + trustedRoot.getSubjectX500Principal());
+
             X509Certificate leaf = certs.get(0);
+
             byte[] attestationExtension =
                     leaf.getExtensionValue(ATTESTATION_OID);
 
@@ -198,6 +223,10 @@ public class AttestationEngine {
                             keymasterSecurityLevel
                                     .getValue()
                                     .intValue());
+
+            result.isHardwareBacked =
+                    !"SOFTWARE".equals(result.attestationSecurityLevel)
+                            && !"SOFTWARE".equals(result.keymasterSecurityLevel);
 
             ASN1Sequence rootOfTrust =
                     extractRootOfTrust(keyDescription);

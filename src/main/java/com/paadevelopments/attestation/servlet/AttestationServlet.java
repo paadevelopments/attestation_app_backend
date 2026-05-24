@@ -199,13 +199,36 @@ public class AttestationServlet extends HttpServlet {
                 return;
             }
 
-            int score =
-                    AttestationEngine.computeTrustScore(
-                            parsedAttestation.verifiedBootState,
-                            parsedAttestation.isBootloaderLocked,
-                            parsedAttestation.keymasterSecurityLevel,
-                            isRooted,
-                            isHookDetected);
+            if (!parsedAttestation.isHardwareBacked) {
+
+                resp.setStatus(
+                        HttpServletResponse.SC_FORBIDDEN);
+
+                out.print(
+                        "{\"success\":false,\"reason\":\"SOFTWARE_ATTESTATION_REJECTED\"}");
+
+                return;
+            }
+
+            if (!"VERIFIED".equals(parsedAttestation.verifiedBootState)) {
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                out.print("{\"success\":false,\"reason\":\"BOOT_STATE_NOT_VERIFIED\"}");
+                return;
+            }
+
+            if (!parsedAttestation.isBootloaderLocked) {
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                out.print("{\"success\":false,\"reason\":\"BOOTLOADER_UNLOCKED\"}");
+                return;
+            }
+
+            int score = AttestationEngine.computeTrustScore(
+                    parsedAttestation.verifiedBootState,
+                    true,
+                    parsedAttestation.keymasterSecurityLevel,
+                    isRooted,
+                    isHookDetected
+            );
 
             String decision = "REJECT";
             boolean success = false;
